@@ -1,0 +1,445 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  CloudFormation template to create an EventBridge scheduled event that triggers 
+  a Lambda function to execute Athena queries on CloudTrail Lake data.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Schedule Configuration"
+        Parameters:
+          - ScheduleExpression
+      - Label:
+          default: "Athena Configuration"
+        Parameters:
+          - AthenaQueryOutputLocation
+          - EventDataStoreId
+      - Label:
+          default: "Storage Configuration"
+        Parameters:
+          - ExportSubsetBucketname
+          - CustomQueryBucketname
+          - CustomQueryFileName
+
+Parameters:
+  ScheduleExpression:
+    Type: String
+    Default: 'cron(0 12 ? * MON *)'
+    Description: Schedule expression for the EventBridge rule (runs every Monday at 12:00 PM UTC)
+    AllowedPattern: '^cron\([^\)]+\)$'
+
+  AthenaQueryOutputLocation:
+    Type: String
+    Description: New S3 bucket to store Athena query results (aws-athena-query-results-<accountid>-<region>)
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]*[a-z0-9]$'
+
+  ExportSubsetBucketname:
+    Type: String
+    Description: New S3 bucket to store subset of CloudTrail events
+    Default: 'export-subset-bucket'
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]*[a-z0-9]$'
+
+  EventDataStoreId:
+    Type: String
+    Description: CloudTrail Lake event data store ID
+    AllowedPattern: '^[a-zA-Z0-9-]+$'
+
+  CustomQueryBucketname:
+    Type: String
+    Description: New S3 bucket to store 'CustomQueryFileName' SQL query file
+    Default: 'custom-query-bucket'
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]*[a-z0-9]$'
+
+  CustomQueryFileName:
+    Type: String
+    Default: demo.sql
+    Description: SQL query filename
+    AllowedPattern: '^[a-zA-Z0-9._-]+\.sql$'
+
+Resources:
+  LoggingBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true    
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  ExportS3Bucket:   
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${ExportSubsetBucketname}-${AWS::AccountId}'  
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true    
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: 'export-bucket-logs/'
+      VersioningConfiguration:
+        Status: Enabled
+
+  ExportS3BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref ExportS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: 
+              - !Sub 'arn:aws:s3:::${ExportS3Bucket}/*'
+              - !Sub 'arn:aws:s3:::${ExportS3Bucket}'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  CustomQueryBucket:    
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub '${CustomQueryBucketname}-${AWS::AccountId}'   
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true    
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: 'query-bucket-logs/'
+
+  CustomQueryBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref CustomQueryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: 
+              - !Sub 'arn:aws:s3:::${CustomQueryBucket}/*'
+              - !Sub 'arn:aws:s3:::${CustomQueryBucket}'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  AthenaQueryOutputBucket:    
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref AthenaQueryOutputLocation   
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true    
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: 'athena-output-logs/'
+
+  AthenaQueryOutputBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref AthenaQueryOutputBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: 
+              - !Sub 'arn:aws:s3:::${AthenaQueryOutputBucket}/*'
+              - !Sub 'arn:aws:s3:::${AthenaQueryOutputBucket}'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+  
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Triggers Lambda function for Athena query execution
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: LambdaFunctionTarget
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref LambdaPermissionsPolicy
+
+  LambdaPermissionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DependsOn:
+         - ExportS3Bucket
+         - CustomQueryBucket
+    Properties:
+      ManagedPolicyName: !Sub '${AWS::StackName}-AthenaQueryPermissions'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AthenaPermissions
+            Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:StopQueryExecution
+              - athena:UpdateWorkGroup
+            Resource:
+              - !Sub 'arn:aws:athena:*:${AWS::AccountId}:workgroup/primary'
+          
+          - Sid: GluePermissions
+            Effect: Allow
+            Action:
+              - glue:Create*
+              - glue:GetTable
+              - glue:GetPartitions
+              - glue:GetDatabase
+            Resource:
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/*'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/*/*'
+
+          - Sid: S3Permissions
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub 'arn:aws:s3:::${AthenaQueryOutputBucket}/*'
+              - !Sub 'arn:aws:s3:::${AthenaQueryOutputBucket}'
+              - !Sub 'arn:aws:s3:::${ExportS3Bucket}/*'
+              - !Sub 'arn:aws:s3:::${ExportS3Bucket}'
+              - !Sub 'arn:aws:s3:::${CustomQueryBucket}/*'
+              - !Sub 'arn:aws:s3:::${CustomQueryBucket}'
+
+          - Sid: SSMPermissions
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:PutParameter
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/athena/*'
+
+          - Sid: LakeFormationPermissions
+            Effect: Allow
+            Action:
+              - lakeformation:List*
+              - lakeformation:Get*
+              - lakeformation:Search
+              - lakeformation:Describe*
+            Resource: '*'
+
+  EventBridgePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventBridgeRule.Arn
+  
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-AthenaQueryFunction'
+      Runtime: python3.9
+      Timeout: 300
+      MemorySize: 256
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          ATHENA_QUERY_OUTPUT_LOCATION: !Ref AthenaQueryOutputBucket
+          ExportS3Bucketname: !Ref ExportS3Bucket
+          Account_Id: !Ref AWS::AccountId
+          Event_DataStore_Id: !Ref EventDataStoreId
+          QueryS3Bucketname: !Ref CustomQueryBucket
+          QuerySQLFileName: !Ref CustomQueryFileName
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          from datetime import datetime, timedelta
+
+          def concatenate_queries(query1, query2, account_id, eventdatastore_id, start_time, end_time):
+              formatted_query2 = query2.format(
+                  account_id=account_id,
+                  eventdatastore_id=eventdatastore_id,
+                  start_time=start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+                  end_time=end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+              )
+              return query1 + "" + formatted_query2
+
+          def get_current_month_path():
+              now = datetime.now()
+              return f"year_1={now.year}/month_1={now.month}/day_1={now.day}/hour_1={now.hour}/minute_1={now.minute}/"
+
+          def lambda_handler(event, context):
+              try:
+                  # Initialize variables
+                  current_month_path = get_current_month_path()
+                  bucket_name = f"s3://{os.environ['ExportS3Bucketname']}"
+                  athena_output_location = f"s3://{os.environ['ATHENA_QUERY_OUTPUT_LOCATION']}/"
+                  s3_external_location = f'{bucket_name}/{current_month_path}'
+
+                  # Initialize AWS clients
+                  athena_client = boto3.client('athena')
+                  ssm_client = boto3.client('ssm')
+                  s3_client = boto3.client('s3')
+
+                  # Get configuration values
+                  account_id = os.environ['Account_Id']
+                  eventdatastore_id = os.environ['Event_DataStore_Id']
+                  event_source = os.environ.get('AWS_LAMBDA_FUNCTION_INVOKED_ARN', '').split(':')[-1]
+                  time_range_hours = 24 if event_source == 'events.amazonaws.com' else int(os.environ.get('TIME_RANGE_HOURS', '1'))
+
+                  # Determine time range
+                  try:
+                      last_execution_time_param = ssm_client.get_parameter(Name='/athena/last_execution_time')
+                      start_time = datetime.strptime(last_execution_time_param['Parameter']['Value'], '%Y-%m-%d %H:%M:%S.%f')
+                  except ssm_client.exceptions.ParameterNotFound:
+                      start_time = datetime.now() - timedelta(hours=time_range_hours)
+
+                  end_time = datetime.now()
+
+                  # Get SQL query from S3
+                  sql_s3_bucket = os.environ['QueryS3Bucketname']
+                  sql_s3_key = os.environ['QuerySQLFileName']
+                  sql_file_obj = s3_client.get_object(Bucket=sql_s3_bucket, Key=sql_s3_key)
+                  sql_file_content = sql_file_obj['Body'].read().decode('utf-8')
+                  query2 = sql_file_content
+
+                  # Generate unique table name with timestamp
+                  timestamp_suffix = end_time.strftime('%Y%m%d_%H%M%S')
+
+                  # Update Athena workgroup configuration
+                  athena_client.update_work_group(
+                      WorkGroup='primary',
+                      ConfigurationUpdates={
+                          'ResultConfigurationUpdates': {
+                              'OutputLocation': athena_output_location
+                          }
+                      }
+                  )
+
+                  # Construct and execute query
+                  query1 = f"""
+                  CREATE TABLE default.temp_table_{timestamp_suffix} 
+                  WITH (
+                      format = 'Parquet',
+                      parquet_compression = 'SNAPPY',
+                      external_location = '{s3_external_location}'
+                  ) AS
+                  """
+                  
+                  combined_query = concatenate_queries(query1, query2, account_id, 
+                                                     eventdatastore_id, start_time, end_time)
+
+                  # Execute Athena query
+                  response = athena_client.start_query_execution(
+                      QueryString=combined_query,
+                      ResultConfiguration={
+                          'OutputLocation': athena_output_location
+                      }
+                  )
+
+                  # Update last execution time in Parameter Store
+                  ssm_client.put_parameter(
+                      Name='/athena/last_execution_time',
+                      Value=end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+                      Type='String',
+                      Overwrite=True
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'body': {
+                          'QueryExecutionId': response['QueryExecutionId'],
+                          'Status': 'Query execution started successfully'
+                      }
+                  }
+
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': {
+                          'error': str(e),
+                          'message': 'Error executing Athena query'
+                      }
+                  }
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the created Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaFunctionArn"
+
+  EventBridgeRuleArn:
+    Description: ARN of the EventBridge rule
+    Value: !GetAtt EventBridgeRule.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EventBridgeRuleArn"
+
+  LambdaRoleArn:
+    Description: ARN of the Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaRoleArn"
+
+  ExportBucketName:
+    Description: Name of the Export S3 bucket
+    Value: !Ref ExportS3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ExportBucketName"
+
+  AthenaOutputBucketName:
+    Description: Name of the Athena output S3 bucket
+    Value: !Ref AthenaQueryOutputBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-AthenaOutputBucketName"
