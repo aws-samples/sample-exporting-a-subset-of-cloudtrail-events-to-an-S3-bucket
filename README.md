@@ -9,7 +9,7 @@ Architecture
 
 ## Solution Architecture
 
-![alt text](<Screenshot 2025-03-14 at 5.01.00 PM.png>)
+![alt text](<architecture.png>)
 
 ## Key Components:
 
