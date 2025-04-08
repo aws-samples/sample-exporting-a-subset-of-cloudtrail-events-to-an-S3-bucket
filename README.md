@@ -13,28 +13,26 @@ Architecture
 
 ## Key Components:
 
-    EventBridge Rule: Schedules automated export jobs
-    Lambda Function: Executes Athena queries and manages data export
-    Athena Database: Stores CloudTrail Lake event data
-    S3 Bucket: Stores filtered events in Parquet format
+    - EventBridge Rule: Schedules automated export jobs
+    - Lambda Function: Executes Athena queries and manages data export
+    - Athena Database: Stores CloudTrail Lake event data
+    - S3 Bucket: Stores filtered events in Parquet format
 
 ## Prerequisites
 
 ### Before deployment, ensure you have:
 
-    Created a CloudTrail Lake event data store with query federation enabled
-    Set up an S3 bucket to store custom queries
-    AWS CLI configured with appropriate permissions
+    - Created a CloudTrail Lake event data store with query federation enabled
+    - Set up an S3 bucket to store custom queries
+    - AWS CLI configured with appropriate permissions
 
 ## Deployment
 
-    Download the required files:
+    - Download the required files:
         CloudFormation template
         demo.sql query file
-
-    Upload the demo.sql to your custom query S3 bucket
-
-    Deploy via CloudFormation:
+    - Upload the demo.sql to your custom query S3 bucket
+    - Deploy via CloudFormation:
 
 aws cloudformation create-stack --stack-name cloudtrail-lake-export --template-body file://template.yaml
 
